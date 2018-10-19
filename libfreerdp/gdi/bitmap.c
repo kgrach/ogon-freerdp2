@@ -56,7 +56,7 @@ INLINE UINT32 gdi_GetPixel(HGDI_DC hdc, UINT32 nXPos, UINT32 nYPos)
 {
 	HGDI_BITMAP hBmp = (HGDI_BITMAP) hdc->selectedObject;
 	BYTE* data = &(hBmp->data[(nYPos * hBmp->scanline) + nXPos * GetBytesPerPixel(
-	                              hBmp->format)]);
+	                                                       hBmp->format)]);
 	return ReadColor(data, hBmp->format);
 }
 
@@ -80,7 +80,7 @@ static INLINE UINT32 gdi_SetPixelBmp(HGDI_BITMAP hBmp, UINT32 X, UINT32 Y,
                                      UINT32 crColor)
 {
 	BYTE* p = &hBmp->data[(Y * hBmp->scanline) + X * GetBytesPerPixel(
-	                          hBmp->format)];
+	                                               hBmp->format)];
 	WriteColor(p, hBmp->format, crColor);
 	return crColor;
 }
@@ -230,11 +230,11 @@ static UINT32 process_rop(UINT32 src, UINT32 dst, UINT32 pat, const char* rop,
 		switch (op)
 		{
 			case '0':
-				stack[stackp++] = GetColor(format, 0, 0, 0, 0xFF);
+				stack[stackp++] = FreeRDPGetColor(format, 0, 0, 0, 0xFF);
 				break;
 
 			case '1':
-				stack[stackp++] = GetColor(format, 0xFF, 0xFF, 0xFF, 0xFF);
+				stack[stackp++] = FreeRDPGetColor(format, 0xFF, 0xFF, 0xFF, 0xFF);
 				break;
 
 			case 'D':
@@ -303,7 +303,7 @@ static INLINE BOOL BitBlt_write(HGDI_DC hdcDest, HGDI_DC hdcSrc, UINT32 nXDest,
 		}
 
 		colorC = ReadColor(srcp, hdcSrc->format);
-		colorC = ConvertColor(colorC, hdcSrc->format, hdcDest->format, palette);
+		colorC = FreeRDPConvertColor(colorC, hdcSrc->format, hdcDest->format, palette);
 	}
 
 	if (usePat)
@@ -480,8 +480,14 @@ BOOL gdi_BitBlt(HGDI_DC hdcDest, UINT32 nXDest, UINT32 nYDest,
 	switch (rop)
 	{
 		case GDI_SRCCOPY:
+			if (!hdcSrc)
+				return FALSE;
+
 			hSrcBmp = (HGDI_BITMAP) hdcSrc->selectedObject;
 			hDstBmp = (HGDI_BITMAP) hdcDest->selectedObject;
+
+			if (!hSrcBmp || !hDstBmp)
+				return FALSE;
 
 			if (!freerdp_image_copy(hDstBmp->data, hDstBmp->format, hDstBmp->scanline,
 			                        nXDest, nYDest, nWidth, nHeight,
@@ -493,6 +499,9 @@ BOOL gdi_BitBlt(HGDI_DC hdcDest, UINT32 nXDest, UINT32 nYDest,
 		case GDI_DSTCOPY:
 			hSrcBmp = (HGDI_BITMAP) hdcDest->selectedObject;
 			hDstBmp = (HGDI_BITMAP) hdcDest->selectedObject;
+
+			if (!hSrcBmp || !hDstBmp)
+				return FALSE;
 
 			if (!freerdp_image_copy(hDstBmp->data, hDstBmp->format, hDstBmp->scanline,
 			                        nXDest, nYDest, nWidth, nHeight,

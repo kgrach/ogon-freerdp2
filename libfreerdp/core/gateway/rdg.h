@@ -17,8 +17,8 @@
  * limitations under the License.
  */
 
-#ifndef FREERDP_CORE_RDG_H
-#define FREERDP_CORE_RDG_H
+#ifndef FREERDP_LIB_CORE_GATEWAY_RDG_H
+#define FREERDP_LIB_CORE_GATEWAY_RDG_H
 
 
 #include <winpr/wtypes.h>
@@ -50,6 +50,7 @@ typedef struct rdp_rdg rdpRdg;
 #define HTTP_EXTENDED_AUTH_NONE 0x0
 #define HTTP_EXTENDED_AUTH_SC 0x1   /* Smart card authentication. */
 #define HTTP_EXTENDED_AUTH_PAA 0x02   /* Pluggable authentication. */
+#define HTTP_EXTENDED_AUTH_SSPI_NTLM 0x04   /* NTLM extended authentication. */
 
 /* HTTP packet types. */
 #define PKT_TYPE_HANDSHAKE_REQUEST 0x1
@@ -107,20 +108,11 @@ typedef struct rdp_rdg rdpRdg;
 enum
 {
 	RDG_CLIENT_STATE_INITIAL,
-	RDG_CLIENT_STATE_OUT_CHANNEL_REQUEST,
-	RDG_CLIENT_STATE_OUT_CHANNEL_AUTHORIZE,
-	RDG_CLIENT_STATE_OUT_CHANNEL_AUTHORIZED,
-	RDG_CLIENT_STATE_IN_CHANNEL_REQUEST,
-	RDG_CLIENT_STATE_IN_CHANNEL_AUTHORIZE,
-	RDG_CLIENT_STATE_IN_CHANNEL_AUTHORIZED,
 	RDG_CLIENT_STATE_HANDSHAKE,
 	RDG_CLIENT_STATE_TUNNEL_CREATE,
 	RDG_CLIENT_STATE_TUNNEL_AUTHORIZE,
 	RDG_CLIENT_STATE_CHANNEL_CREATE,
 	RDG_CLIENT_STATE_OPENED,
-	RDG_CLIENT_STATE_CLOSE,
-	RDG_CLIENT_STATE_CLOSED,
-	RDG_CLIENT_STATE_NOT_FOUND,
 };
 
 struct rdp_rdg
@@ -132,7 +124,6 @@ struct rdp_rdg
 	rdpTls* tlsOut;
 	rdpNtlm* ntlm;
 	HttpContext* http;
-	HANDLE readEvent;
 	CRITICAL_SECTION writeSection;
 
 	UUID guid;
@@ -140,17 +131,16 @@ struct rdp_rdg
 	int state;
 	UINT16 packetRemainingCount;
 	int timeout;
+	UINT16 extAuth;
 };
 
 
 FREERDP_LOCAL rdpRdg* rdg_new(rdpTransport* transport);
 FREERDP_LOCAL void rdg_free(rdpRdg* rdg);
 
-FREERDP_LOCAL BOOL rdg_connect(rdpRdg* rdg, const char* hostname, UINT16 port,
-                               int timeout);
+FREERDP_LOCAL BOOL rdg_connect(rdpRdg* rdg, int timeout, BOOL* rpcFallback);
 FREERDP_LOCAL DWORD rdg_get_event_handles(rdpRdg* rdg, HANDLE* events,
         DWORD count);
-FREERDP_LOCAL BOOL rdg_check_event_handles(rdpRdg* rdg);
 
 
-#endif /* FREERDP_CORE_RDG_H */
+#endif /* FREERDP_LIB_CORE_GATEWAY_RDG_H */

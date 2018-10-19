@@ -33,6 +33,7 @@
 
 #define TAG FREERDP_TAG("core.gcc")
 
+
 /**
  * T.124 GCC is defined in:
  *
@@ -332,7 +333,7 @@ BOOL gcc_read_client_data_blocks(wStream* s, rdpMcs* mcs, int length)
 {
 	UINT16 type;
 	UINT16 blockLength;
-	int begPos, endPos;
+	size_t begPos, endPos;
 
 	while (length > 0)
 	{
@@ -836,13 +837,13 @@ BOOL gcc_read_client_core_data(wStream* s, rdpMcs* mcs, UINT16 blockLength)
 		                                     RNS_UD_CS_SUPPORT_MONITOR_LAYOUT_PDU) ? TRUE : FALSE;
 
 	if (settings->SupportStatusInfoPdu)
-		settings->SupportStatusInfoPdu = (earlyCapabilityFlags & RNS_UD_CS_SUPPORT_STATUSINFO_PDU) ? TRUE : FALSE;
+		settings->SupportStatusInfoPdu = (earlyCapabilityFlags &
+		                                  RNS_UD_CS_SUPPORT_STATUSINFO_PDU) ? TRUE : FALSE;
 
 	if (!(earlyCapabilityFlags & RNS_UD_CS_VALID_CONNECTION_TYPE))
 		connectionType = 0;
 
-	settings->SupportErrorInfoPdu = earlyCapabilityFlags &
-	                                RNS_UD_CS_SUPPORT_ERRINFO_PDU;
+	settings->SupportErrorInfoPdu = earlyCapabilityFlags & RNS_UD_CS_SUPPORT_ERRINFO_PDU;
 	settings->ConnectionType = connectionType;
 	return TRUE;
 }
@@ -1188,38 +1189,50 @@ BOOL gcc_read_server_security_data(wStream* s, rdpMcs* mcs)
 	Stream_Read_UINT32(s, settings->ServerRandomLength); /* serverRandomLen */
 	Stream_Read_UINT32(s, settings->ServerCertificateLength); /* serverCertLen */
 
-	if (Stream_GetRemainingLength(s) < settings->ServerRandomLength +
-	    settings->ServerCertificateLength)
+	if ((settings->ServerRandomLength == 0) || (settings->ServerCertificateLength == 0))
 		return FALSE;
 
-	if ((settings->ServerRandomLength <= 0)
-	    || (settings->ServerCertificateLength <= 0))
+	if (Stream_GetRemainingLength(s) < settings->ServerRandomLength)
 		return FALSE;
 
 	/* serverRandom */
 	settings->ServerRandom = (BYTE*) malloc(settings->ServerRandomLength);
 
 	if (!settings->ServerRandom)
-		return FALSE;
+		goto fail;
 
 	Stream_Read(s, settings->ServerRandom, settings->ServerRandomLength);
+
+	if (Stream_GetRemainingLength(s) < settings->ServerCertificateLength)
+		goto fail;
+
 	/* serverCertificate */
 	settings->ServerCertificate = (BYTE*) malloc(settings->ServerCertificateLength);
 
 	if (!settings->ServerCertificate)
-		return FALSE;
+		goto fail;
 
 	Stream_Read(s, settings->ServerCertificate, settings->ServerCertificateLength);
 	certificate_free(settings->RdpServerCertificate);
 	settings->RdpServerCertificate = certificate_new();
 
 	if (!settings->RdpServerCertificate)
-		return FALSE;
+		goto fail;
 
 	data = settings->ServerCertificate;
 	length = settings->ServerCertificateLength;
-	return certificate_read_server_certificate(settings->RdpServerCertificate, data,
-	        length);
+
+	if (!certificate_read_server_certificate(settings->RdpServerCertificate, data,
+	        length))
+		goto fail;
+
+	return TRUE;
+fail:
+	free(settings->ServerRandom);
+	free(settings->ServerCertificate);
+	settings->ServerRandom = NULL;
+	settings->ServerCertificate = NULL;
+	return FALSE;
 }
 
 static const BYTE initial_signature[] =
@@ -1458,6 +1471,12 @@ BOOL gcc_write_server_security_data(wStream* s, rdpMcs* mcs)
 	Stream_Write_UINT32(s, serverCertLen); /* serverCertLen */
 	settings->ServerRandomLength = serverRandomLen;
 	settings->ServerRandom = (BYTE*) malloc(serverRandomLen);
+
+	if (!settings->ServerRandom)
+	{
+		return FALSE;
+	}
+
 	winpr_RAND(settings->ServerRandom, serverRandomLen);
 	Stream_Write(s, settings->ServerRandom, serverRandomLen);
 	sigData = Stream_Pointer(s);
@@ -1507,7 +1526,7 @@ BOOL gcc_read_client_network_data(wStream* s, rdpMcs* mcs, UINT16 blockLength)
 	if (blockLength < 4 + mcs->channelCount * 12)
 		return FALSE;
 
-	if (mcs->channelCount > 16)
+	if (mcs->channelCount > CHANNEL_MAX_COUNT)
 		return FALSE;
 
 	/* channelDefArray */
@@ -1755,6 +1774,7 @@ void gcc_write_client_monitor_data(wStream* s, rdpMcs* mcs)
 	int i;
 	UINT16 length;
 	UINT32 left, top, right, bottom, flags;
+	INT32 baseX = 0, baseY = 0;
 	rdpSettings* settings = mcs->settings;
 
 	if (settings->MonitorCount > 1)
@@ -1764,13 +1784,23 @@ void gcc_write_client_monitor_data(wStream* s, rdpMcs* mcs)
 		Stream_Write_UINT32(s, 0); /* flags */
 		Stream_Write_UINT32(s, settings->MonitorCount); /* monitorCount */
 
+		/* first pass to get the primary monitor coordinates (it is supposed to be
+		 * in (0,0) */
 		for (i = 0; i < settings->MonitorCount; i++)
 		{
-			left = settings->MonitorDefArray[i].x;
-			top = settings->MonitorDefArray[i].y;
-			right = settings->MonitorDefArray[i].x + settings->MonitorDefArray[i].width - 1;
-			bottom = settings->MonitorDefArray[i].y + settings->MonitorDefArray[i].height -
-			         1;
+			if (settings->MonitorDefArray[i].is_primary)
+			{
+				baseX = settings->MonitorDefArray[i].x;
+				baseY = settings->MonitorDefArray[i].y;
+			}
+		}
+
+		for (i = 0; i < settings->MonitorCount; i++)
+		{
+			left = settings->MonitorDefArray[i].x - baseX;
+			top = settings->MonitorDefArray[i].y - baseY;
+			right = left + settings->MonitorDefArray[i].width - 1;
+			bottom = top + settings->MonitorDefArray[i].height - 1;
 			flags = settings->MonitorDefArray[i].is_primary ? MONITOR_PRIMARY : 0;
 			Stream_Write_UINT32(s, left); /* left */
 			Stream_Write_UINT32(s, top); /* top */

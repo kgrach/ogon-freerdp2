@@ -43,6 +43,7 @@ static const char* error_code_names[] =
 	"RAIL_EXEC_E_SESSION_LOCKED"
 };
 
+#ifdef WITH_DEBUG_RAIL
 static const char* movetype_names[] =
 {
 	"(invalid)",
@@ -58,13 +59,14 @@ static const char* movetype_names[] =
 	"RAIL_WMSZ_KEYMOVE",
 	"RAIL_WMSZ_KEYSIZE"
 };
+#endif
 
 void xf_rail_enable_remoteapp_mode(xfContext* xfc)
 {
 	if (!xfc->remote_app)
 	{
 		xfc->remote_app = TRUE;
-		xfc->drawable = DefaultRootWindow(xfc->display);
+		xfc->drawable = xf_CreateDummyWindow(xfc);
 		xf_DestroyDesktopWindow(xfc, xfc->window);
 		xfc->window = NULL;
 	}
@@ -75,6 +77,7 @@ void xf_rail_disable_remoteapp_mode(xfContext* xfc)
 	if (xfc->remote_app)
 	{
 		xfc->remote_app = FALSE;
+		xf_DestroyDummyWindow(xfc, xfc->drawable);
 		xf_create_window(xfc);
 	}
 }
@@ -87,6 +90,11 @@ void xf_rail_send_activate(xfContext* xfc, Window xwindow, BOOL enabled)
 
 	if (!appWindow)
 		return;
+
+	if (enabled)
+		xf_SetWindowStyle(xfc, appWindow, appWindow->dwStyle, appWindow->dwExStyle);
+	else
+		xf_SetWindowStyle(xfc, appWindow, 0, 0);
 
 	activate.windowId = appWindow->windowId;
 	activate.enabled = enabled;
@@ -182,7 +190,7 @@ void xf_rail_end_local_move(xfContext* xfc, xfAppWindow* appWindow)
 	appWindow->local_move.state = LMS_TERMINATING;
 }
 
-void xf_rail_invalidate_region(xfContext* xfc, REGION16* invalidRegion)
+static void xf_rail_invalidate_region(xfContext* xfc, REGION16* invalidRegion)
 {
 	int index;
 	int count;
@@ -223,6 +231,7 @@ void xf_rail_invalidate_region(xfContext* xfc, REGION16* invalidRegion)
 		}
 	}
 
+	free(pKeys);
 	region16_uninit(&windowInvalidRegion);
 }
 
@@ -513,16 +522,12 @@ static BOOL xf_rail_window_common(rdpContext* context,
 static BOOL xf_rail_window_delete(rdpContext* context,
                                   WINDOW_ORDER_INFO* orderInfo)
 {
-	xfAppWindow* appWindow = NULL;
 	xfContext* xfc = (xfContext*) context;
-	appWindow = (xfAppWindow*) HashTable_GetItemValue(xfc->railWindows,
-	            (void*)(UINT_PTR) orderInfo->windowId);
 
-	if (!appWindow)
-		return TRUE;
+	if (!xfc)
+		return FALSE;
 
 	HashTable_Remove(xfc->railWindows, (void*)(UINT_PTR) orderInfo->windowId);
-	xf_DestroyWindow(xfc, appWindow);
 	return TRUE;
 }
 
@@ -607,7 +612,7 @@ static BOOL xf_rail_non_monitored_desktop(rdpContext* context,
 	return TRUE;
 }
 
-void xf_rail_register_update_callbacks(rdpUpdate* update)
+static void xf_rail_register_update_callbacks(rdpUpdate* update)
 {
 	rdpWindowUpdate* window = update->window;
 	window->WindowCreate = xf_rail_window_common;
@@ -630,7 +635,7 @@ void xf_rail_register_update_callbacks(rdpUpdate* update)
  * @return 0 on success, otherwise a Win32 error code
  */
 static UINT xf_rail_server_execute_result(RailClientContext* context,
-        RAIL_EXEC_RESULT_ORDER* execResult)
+        const RAIL_EXEC_RESULT_ORDER* execResult)
 {
 	xfContext* xfc = (xfContext*) context->custom;
 
@@ -654,7 +659,7 @@ static UINT xf_rail_server_execute_result(RailClientContext* context,
  * @return 0 on success, otherwise a Win32 error code
  */
 static UINT xf_rail_server_system_param(RailClientContext* context,
-                                        RAIL_SYSPARAM_ORDER* sysparam)
+                                        const RAIL_SYSPARAM_ORDER* sysparam)
 {
 	return CHANNEL_RC_OK;
 }
@@ -665,7 +670,7 @@ static UINT xf_rail_server_system_param(RailClientContext* context,
  * @return 0 on success, otherwise a Win32 error code
  */
 static UINT xf_rail_server_handshake(RailClientContext* context,
-                                     RAIL_HANDSHAKE_ORDER* handshake)
+                                     const RAIL_HANDSHAKE_ORDER* handshake)
 {
 	RAIL_EXEC_ORDER exec;
 	RAIL_SYSPARAM_ORDER sysparam;
@@ -721,7 +726,7 @@ static UINT xf_rail_server_handshake(RailClientContext* context,
  * @return 0 on success, otherwise a Win32 error code
  */
 static UINT xf_rail_server_handshake_ex(RailClientContext* context,
-                                        RAIL_HANDSHAKE_EX_ORDER* handshakeEx)
+                                        const RAIL_HANDSHAKE_EX_ORDER* handshakeEx)
 {
 	return CHANNEL_RC_OK;
 }
@@ -732,7 +737,7 @@ static UINT xf_rail_server_handshake_ex(RailClientContext* context,
  * @return 0 on success, otherwise a Win32 error code
  */
 static UINT xf_rail_server_local_move_size(RailClientContext* context,
-        RAIL_LOCALMOVESIZE_ORDER* localMoveSize)
+        const RAIL_LOCALMOVESIZE_ORDER* localMoveSize)
 {
 	int x = 0, y = 0;
 	int direction = 0;
@@ -831,21 +836,22 @@ static UINT xf_rail_server_local_move_size(RailClientContext* context,
  * @return 0 on success, otherwise a Win32 error code
  */
 static UINT xf_rail_server_min_max_info(RailClientContext* context,
-                                        RAIL_MINMAXINFO_ORDER* minMaxInfo)
+                                        const RAIL_MINMAXINFO_ORDER* minMaxInfo)
 {
 	xfAppWindow* appWindow = NULL;
 	xfContext* xfc = (xfContext*) context->custom;
 	appWindow = (xfAppWindow*) HashTable_GetItemValue(xfc->railWindows,
 	            (void*)(UINT_PTR) minMaxInfo->windowId);
 
-	if (!appWindow)
-		return ERROR_INTERNAL_ERROR;
+	if (appWindow)
+	{
+		xf_SetWindowMinMaxInfo(xfc, appWindow,
+		                       minMaxInfo->maxWidth, minMaxInfo->maxHeight,
+		                       minMaxInfo->maxPosX, minMaxInfo->maxPosY,
+		                       minMaxInfo->minTrackWidth, minMaxInfo->minTrackHeight,
+		                       minMaxInfo->maxTrackWidth, minMaxInfo->maxTrackHeight);
+	}
 
-	xf_SetWindowMinMaxInfo(xfc, appWindow,
-	                       minMaxInfo->maxWidth, minMaxInfo->maxHeight,
-	                       minMaxInfo->maxPosX, minMaxInfo->maxPosY,
-	                       minMaxInfo->minTrackWidth, minMaxInfo->minTrackHeight,
-	                       minMaxInfo->maxTrackWidth, minMaxInfo->maxTrackHeight);
 	return CHANNEL_RC_OK;
 }
 
@@ -855,7 +861,7 @@ static UINT xf_rail_server_min_max_info(RailClientContext* context,
  * @return 0 on success, otherwise a Win32 error code
  */
 static UINT xf_rail_server_language_bar_info(RailClientContext* context,
-        RAIL_LANGBAR_INFO_ORDER* langBarInfo)
+        const RAIL_LANGBAR_INFO_ORDER* langBarInfo)
 {
 	return CHANNEL_RC_OK;
 }
@@ -866,14 +872,28 @@ static UINT xf_rail_server_language_bar_info(RailClientContext* context,
  * @return 0 on success, otherwise a Win32 error code
  */
 static UINT xf_rail_server_get_appid_response(RailClientContext* context,
-        RAIL_GET_APPID_RESP_ORDER* getAppIdResp)
+        const RAIL_GET_APPID_RESP_ORDER* getAppIdResp)
 {
 	return CHANNEL_RC_OK;
+}
+
+static void rail_window_free(void* value)
+{
+	xfAppWindow* appWindow = (xfAppWindow*) value;
+
+	if (!appWindow)
+		return;
+
+	xf_DestroyWindow(appWindow->xfc, appWindow);
 }
 
 int xf_rail_init(xfContext* xfc, RailClientContext* rail)
 {
 	rdpContext* context = (rdpContext*) xfc;
+
+	if (!xfc || !rail)
+		return 0;
+
 	xfc->rail = rail;
 	xf_rail_register_update_callbacks(context->update);
 	rail->custom = (void*) xfc;
@@ -890,6 +910,7 @@ int xf_rail_init(xfContext* xfc, RailClientContext* rail)
 	if (!xfc->railWindows)
 		return 0;
 
+	xfc->railWindows->valueFree = rail_window_free;
 	return 1;
 }
 

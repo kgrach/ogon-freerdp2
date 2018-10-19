@@ -30,13 +30,10 @@
 
 #include <freerdp/log.h>
 
+#include "rdp.h"
 #include "peer.h"
 
 #define TAG FREERDP_TAG("core.peer")
-
-#ifdef WITH_DEBUG_RDP
-extern const char* DATA_PDU_TYPE_STRINGS[80];
-#endif
 
 static HANDLE freerdp_peer_virtual_channel_open(freerdp_peer* client, const char* name,
         UINT32 flags)
@@ -374,12 +371,12 @@ static int peer_recv_tpkt_pdu(freerdp_peer* client, wStream* s)
 
 	if (rdp->settings->UseRdpSecurityLayer)
 	{
-		if (!rdp_read_security_header(s, &securityFlags))
+		if (!rdp_read_security_header(s, &securityFlags, &length))
 			return -1;
 
 		if (securityFlags & SEC_ENCRYPT)
 		{
-			if (!rdp_decrypt(rdp, s, length - 4, securityFlags))
+			if (!rdp_decrypt(rdp, s, length, securityFlags))
 			{
 				WLog_ERR(TAG, "rdp_decrypt failed");
 				return -1;
@@ -421,7 +418,7 @@ static int peer_recv_tpkt_pdu(freerdp_peer* client, wStream* s)
 	else if (rdp->mcs->messageChannelId && channelId == rdp->mcs->messageChannelId)
 	{
 		if (!rdp->settings->UseRdpSecurityLayer)
-			if (!rdp_read_security_header(s, &securityFlags))
+			if (!rdp_read_security_header(s, &securityFlags, NULL))
 				return -1;
 
 		return rdp_recv_message_channel_pdu(rdp, s, securityFlags);
@@ -484,7 +481,7 @@ static int peer_recv_callback(rdpTransport* transport, wStream* s, void* extra)
 
 			client->settings->NlaSecurity = (rdp->nego->SelectedProtocol & PROTOCOL_NLA) ? TRUE : FALSE;
 			client->settings->TlsSecurity = (rdp->nego->SelectedProtocol & PROTOCOL_TLS) ? TRUE : FALSE;
-			client->settings->RdpSecurity = (rdp->nego->SelectedProtocol & PROTOCOL_RDP) ? TRUE : FALSE;
+			client->settings->RdpSecurity = (rdp->nego->SelectedProtocol == PROTOCOL_RDP) ? TRUE : FALSE;
 
 			if (rdp->nego->SelectedProtocol & PROTOCOL_NLA)
 			{
@@ -585,7 +582,6 @@ static int peer_recv_callback(rdpTransport* transport, wStream* s, void* extra)
 		case CONNECTION_STATE_CAPABILITIES_EXCHANGE:
 			if (!rdp->AwaitCapabilities)
 			{
-
 				if (client->Capabilities && !client->Capabilities(client))
 					return -1;
 
@@ -678,7 +674,7 @@ static void freerdp_peer_disconnect(freerdp_peer* client)
 	transport_disconnect(transport);
 }
 
-static int freerdp_peer_send_channel_data(freerdp_peer* client, UINT16 channelId, BYTE* data,
+static int freerdp_peer_send_channel_data(freerdp_peer* client, UINT16 channelId, const BYTE* data,
         int size)
 {
 	return rdp_send_channel_data(client->context->rdp, channelId, data, size);

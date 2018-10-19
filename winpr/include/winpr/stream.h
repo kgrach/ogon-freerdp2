@@ -70,12 +70,12 @@ static INLINE void Stream_Rewind(wStream* s, size_t _offset)
 #define _stream_read_n16_le(_t, _s, _v, _p) do { \
 		_v = \
 		     (_t)(*_s->pointer) + \
-		     (((_t)(*(_s->pointer + 1))) << 8); \
+		     (_t)(((_t)(*(_s->pointer + 1))) << 8); \
 		if (_p) Stream_Seek(_s, sizeof(_t)); } while (0)
 
 #define _stream_read_n16_be(_t, _s, _v, _p) do { \
 		_v = \
-		     (((_t)(*_s->pointer)) << 8) + \
+		     (_t)(((_t)(*_s->pointer)) << 8) + \
 		     (_t)(*(_s->pointer + 1)); \
 		if (_p) Stream_Seek(_s, sizeof(_t)); } while (0)
 
@@ -216,8 +216,11 @@ static INLINE void Stream_Write_UINT64(wStream* _s, UINT64 _v)
 }
 static INLINE void Stream_Write(wStream* _s, const void* _b, size_t _n)
 {
-	memcpy(_s->pointer, (_b), (_n));
-	Stream_Seek(_s, _n);
+	if (_n > 0)
+	{
+		memcpy(_s->pointer, (_b), (_n));
+		Stream_Seek(_s, _n);
+	}
 }
 
 #define Stream_Seek_UINT8(_s)		Stream_Seek(_s, 1)
@@ -329,6 +332,38 @@ static INLINE BOOL Stream_SafeSeek(wStream* s, size_t size)
 		return FALSE;
 
 	Stream_Seek(s, size);
+	return TRUE;
+}
+
+static INLINE BOOL Stream_Read_UTF16_String(wStream* s, WCHAR* dst, size_t length)
+{
+	size_t x;
+
+	if (!s || !dst)
+		return FALSE;
+
+	if (Stream_GetRemainingLength(s) / sizeof(WCHAR) < length)
+		return FALSE;
+
+	for (x = 0; x < length; x++)
+		Stream_Read_UINT16(s, dst[x]);
+
+	return TRUE;
+}
+
+static INLINE BOOL Stream_Write_UTF16_String(wStream* s, const WCHAR* src, size_t length)
+{
+	size_t x;
+
+	if (!s || !src)
+		return FALSE;
+
+	if (Stream_GetRemainingCapacity(s) / sizeof(WCHAR) < length)
+		return FALSE;
+
+	for (x = 0; x < length; x++)
+		Stream_Write_UINT16(s, src[x]);
+
 	return TRUE;
 }
 

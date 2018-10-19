@@ -201,7 +201,7 @@ static long transport_bio_simple_ctrl(BIO* bio, int cmd, long arg1, void* arg2)
 		if (!BIO_get_init(bio) || !arg2)
 			return 0;
 
-		*((ULONG_PTR*) arg2) = (ULONG_PTR) ptr->socket;
+		*((SOCKET*) arg2) = ptr->socket;
 		return 1;
 	}
 	else if (cmd == BIO_C_GET_EVENT)
@@ -209,7 +209,7 @@ static long transport_bio_simple_ctrl(BIO* bio, int cmd, long arg1, void* arg2)
 		if (!BIO_get_init(bio) || !arg2)
 			return 0;
 
-		*((ULONG_PTR*) arg2) = (ULONG_PTR) ptr->hEvent;
+		*((HANDLE*) arg2) = ptr->hEvent;
 		return 1;
 	}
 	else if (cmd == BIO_C_SET_NONBLOCK)
@@ -664,27 +664,71 @@ BIO_METHOD* BIO_s_buffered_socket(void)
 	return bio_methods;
 }
 
-char* freerdp_tcp_get_ip_address(int sockfd)
+char* freerdp_tcp_address_to_string(const struct sockaddr_storage* addr, BOOL* pIPv6)
 {
-	BYTE* ip;
-	socklen_t length;
-	char ipAddress[32];
-	struct sockaddr_in sockaddr;
-	length = sizeof(sockaddr);
-	ZeroMemory(&sockaddr, length);
+	char ipAddress[INET6_ADDRSTRLEN + 1] = { 0 };
+	struct sockaddr_in6* sockaddr_ipv6 = (struct sockaddr_in6*)addr;
+	struct sockaddr_in* sockaddr_ipv4 = (struct sockaddr_in*)addr;
 
-	if (getsockname(sockfd, (struct sockaddr*) &sockaddr, &length) == 0)
+	if (addr == NULL)
 	{
-		ip = (BYTE*)(&sockaddr.sin_addr);
-		sprintf_s(ipAddress, sizeof(ipAddress), "%"PRIu8".%"PRIu8".%"PRIu8".%"PRIu8"", ip[0], ip[1], ip[2],
-		          ip[3]);
+		return NULL;
 	}
-	else
+
+	switch (sockaddr_ipv4->sin_family)
 	{
-		strcpy(ipAddress, "127.0.0.1");
+		case AF_INET:
+			if (!inet_ntop(sockaddr_ipv4->sin_family, &sockaddr_ipv4->sin_addr, ipAddress, sizeof(ipAddress)))
+				return NULL;
+
+			break;
+
+		case AF_INET6:
+			if (!inet_ntop(sockaddr_ipv6->sin6_family, &sockaddr_ipv6->sin6_addr, ipAddress, sizeof(ipAddress)))
+				return NULL;
+
+			break;
+
+		case AF_UNIX:
+			sprintf_s(ipAddress, ARRAYSIZE(ipAddress), "127.0.0.1");
+			break;
+
+		default:
+			return NULL;
+	}
+
+	if (pIPv6 != NULL)
+	{
+		*pIPv6 = (sockaddr_ipv4->sin_family == AF_INET6);
 	}
 
 	return _strdup(ipAddress);
+}
+
+static char* freerdp_tcp_get_ip_address(int sockfd, BOOL* pIPv6)
+{
+	struct sockaddr_storage saddr = { 0 };
+	socklen_t length = sizeof(struct sockaddr_storage);
+
+	if (getsockname(sockfd, (struct sockaddr*)&saddr, &length) != 0)
+	{
+		return NULL;
+	}
+
+	return freerdp_tcp_address_to_string(&saddr, pIPv6);
+}
+
+char* freerdp_tcp_get_peer_address(SOCKET sockfd)
+{
+	struct sockaddr_storage saddr = { 0 };
+	socklen_t length = sizeof(struct sockaddr_storage);
+
+	if (getpeername(sockfd, (struct sockaddr*)&saddr, &length) != 0)
+	{
+		return NULL;
+	}
+
+	return freerdp_tcp_address_to_string(&saddr, NULL);
 }
 
 static int freerdp_uds_connect(const char* path)
@@ -692,7 +736,7 @@ static int freerdp_uds_connect(const char* path)
 #ifndef _WIN32
 	int status;
 	int sockfd;
-	struct sockaddr_un addr;
+	struct sockaddr_un addr = { 0 };
 	sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
 
 	if (sockfd == -1)
@@ -702,7 +746,7 @@ static int freerdp_uds_connect(const char* path)
 	}
 
 	addr.sun_family = AF_UNIX;
-	strncpy(addr.sun_path, path, sizeof(addr.sun_path));
+	strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
 	status = connect(sockfd, (struct sockaddr*) &addr, sizeof(addr));
 
 	if (status < 0)
@@ -718,16 +762,39 @@ static int freerdp_uds_connect(const char* path)
 #endif
 }
 
-static BOOL freerdp_tcp_resolve_hostname(rdpContext* context, const char* hostname)
+struct addrinfo* freerdp_tcp_resolve_host(const char* hostname, int port, int ai_flags)
 {
+	char* service = NULL;
+	char port_str[16];
 	int status;
 	struct addrinfo hints = { 0 };
 	struct addrinfo* result = NULL;
 	hints.ai_family = AF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM;
-	status = getaddrinfo(hostname, NULL, &hints, &result);
+	hints.ai_flags = ai_flags;
+
+	if (port >= 0)
+	{
+		sprintf_s(port_str, sizeof(port_str) - 1, "%d", port);
+		service = port_str;
+	}
+
+	status = getaddrinfo(hostname, service, &hints, &result);
 
 	if (status)
+	{
+		freeaddrinfo(result);
+		return NULL;
+	}
+
+	return result;
+}
+
+static BOOL freerdp_tcp_is_hostname_resolvable(rdpContext* context, const char* hostname)
+{
+	struct addrinfo* result = freerdp_tcp_resolve_host(hostname, -1, 0);
+
+	if (!result)
 	{
 		if (!freerdp_get_last_error(context))
 			freerdp_set_last_error(context, FREERDP_ERROR_DNS_NAME_NOT_FOUND);
@@ -743,6 +810,7 @@ static BOOL freerdp_tcp_connect_timeout(rdpContext* context, int sockfd,
                                         struct sockaddr* addr,
                                         socklen_t addrlen, int timeout)
 {
+	BOOL rc = FALSE;
 	HANDLE handles[2];
 	int status = 0;
 	int count = 0;
@@ -758,7 +826,7 @@ static BOOL freerdp_tcp_connect_timeout(rdpContext* context, int sockfd,
 	if (status < 0)
 	{
 		WLog_ERR(TAG, "WSAEventSelect failed with %d", WSAGetLastError());
-		return FALSE;
+		goto fail;
 	}
 
 	handles[count++] = context->abortEvent;
@@ -775,7 +843,7 @@ static BOOL freerdp_tcp_connect_timeout(rdpContext* context, int sockfd,
 				break;
 
 			default:
-				return FALSE;
+				goto fail;
 		}
 	}
 
@@ -786,7 +854,7 @@ static BOOL freerdp_tcp_connect_timeout(rdpContext* context, int sockfd,
 		if (status == WAIT_OBJECT_0 + 1)
 			freerdp_set_last_error(context, FREERDP_ERROR_CONNECT_CANCELLED);
 
-		return FALSE;
+		goto fail;
 	}
 
 	status = recv(sockfd, NULL, 0, 0);
@@ -794,26 +862,28 @@ static BOOL freerdp_tcp_connect_timeout(rdpContext* context, int sockfd,
 	if (status == SOCKET_ERROR)
 	{
 		if (WSAGetLastError() == WSAECONNRESET)
-			return FALSE;
+			goto fail;
 	}
 
 	status = WSAEventSelect(sockfd, handles[0], 0);
-	CloseHandle(handles[0]);
 
 	if (status < 0)
 	{
 		WLog_ERR(TAG, "WSAEventSelect failed with %d", WSAGetLastError());
-		return FALSE;
+		goto fail;
 	}
 
 	if (_ioctlsocket(sockfd, FIONBIO, &arg) != 0)
-		return FALSE;
+		goto fail;
 
-	return TRUE;
+	rc = TRUE;
+fail:
+	CloseHandle(handles[0]);
+	return rc;
 }
 
 static int freerdp_tcp_connect_multi(rdpContext* context, char** hostnames,
-                                     UINT32* ports, int count, int port,
+                                     UINT32* ports, UINT32 count, int port,
                                      int timeout)
 {
 	int index;
@@ -823,13 +893,10 @@ static int freerdp_tcp_connect_multi(rdpContext* context, char** hostnames,
 	SOCKET* sockfds;
 	HANDLE* events;
 	DWORD waitStatus;
-	char port_str[16];
-	struct addrinfo hints;
 	struct addrinfo* addr;
 	struct addrinfo* result;
 	struct addrinfo** addrs;
 	struct addrinfo** results;
-	sprintf_s(port_str, sizeof(port_str) - 1, "%d", port);
 	sockfds = (SOCKET*) calloc(count, sizeof(SOCKET));
 	events = (HANDLE*) calloc(count + 1, sizeof(HANDLE));
 	addrs = (struct addrinfo**) calloc(count, sizeof(struct addrinfo*));
@@ -846,19 +913,15 @@ static int freerdp_tcp_connect_multi(rdpContext* context, char** hostnames,
 
 	for (index = 0; index < count; index++)
 	{
-		ZeroMemory(&hints, sizeof(hints));
-		hints.ai_family = AF_UNSPEC;
-		hints.ai_socktype = SOCK_STREAM;
+		int port = -1;
 
 		if (ports)
-			sprintf_s(port_str, sizeof(port_str) - 1, "%"PRIu32"", ports[index]);
+			port = ports[index];
 
-		status = getaddrinfo(hostnames[index], port_str, &hints, &result);
+		result = freerdp_tcp_resolve_host(hostnames[index], port, 0);
 
-		if (status)
-		{
+		if (!result)
 			continue;
-		}
 
 		addr = result;
 
@@ -991,6 +1054,10 @@ BOOL freerdp_tcp_set_keep_alive_mode(int sockfd)
 	}
 
 #endif
+#ifndef SOL_TCP
+	/* "tcp" from /etc/protocols as getprotobyname(3C) */
+#define SOL_TCP 6
+#endif
 #ifdef TCP_KEEPCNT
 	optval = 3;
 	optlen = sizeof(optval);
@@ -1038,7 +1105,6 @@ BOOL freerdp_tcp_set_keep_alive_mode(int sockfd)
 int freerdp_tcp_connect(rdpContext* context, rdpSettings* settings,
                         const char* hostname, int port, int timeout)
 {
-	int status;
 	int sockfd;
 	UINT32 optval;
 	socklen_t optlen;
@@ -1046,7 +1112,12 @@ int freerdp_tcp_connect(rdpContext* context, rdpSettings* settings,
 	BOOL useExternalDefinedSocket = FALSE;
 
 	if (!hostname)
+	{
+		if (freerdp_get_last_error(context) == FREERDP_ERROR_SUCCESS)
+			freerdp_set_last_error(context, FREERDP_ERROR_CONNECT_FAILED);
+
 		return -1;
+	}
 
 	if (hostname[0] == '/')
 		ipcSocket = TRUE;
@@ -1059,7 +1130,12 @@ int freerdp_tcp_connect(rdpContext* context, rdpSettings* settings,
 		sockfd = freerdp_uds_connect(hostname);
 
 		if (sockfd < 0)
+		{
+			if (freerdp_get_last_error(context) == FREERDP_ERROR_SUCCESS)
+				freerdp_set_last_error(context, FREERDP_ERROR_CONNECT_FAILED);
+
 			return -1;
+		}
 	}
 	else if (useExternalDefinedSocket)
 		sockfd = port;
@@ -1069,7 +1145,7 @@ int freerdp_tcp_connect(rdpContext* context, rdpSettings* settings,
 
 		if (!settings->GatewayEnabled)
 		{
-			if (!freerdp_tcp_resolve_hostname(context, hostname) || settings->RemoteAssistanceMode)
+			if (!freerdp_tcp_is_hostname_resolvable(context, hostname) || settings->RemoteAssistanceMode)
 			{
 				if (settings->TargetNetAddressCount > 0)
 				{
@@ -1085,28 +1161,22 @@ int freerdp_tcp_connect(rdpContext* context, rdpSettings* settings,
 
 		if (sockfd <= 0)
 		{
-			char port_str[16];
-			struct addrinfo hints;
+			char* peerAddress;
 			struct addrinfo* addr;
 			struct addrinfo* result;
-			ZeroMemory(&hints, sizeof(hints));
-			hints.ai_family = AF_UNSPEC;
-			hints.ai_socktype = SOCK_STREAM;
-			sprintf_s(port_str, sizeof(port_str) - 1, "%d", port);
-			status = getaddrinfo(hostname, port_str, &hints, &result);
+			result = freerdp_tcp_resolve_host(hostname, port, 0);
 
-			if (status)
+			if (!result)
 			{
 				if (!freerdp_get_last_error(context))
 					freerdp_set_last_error(context, FREERDP_ERROR_DNS_NAME_NOT_FOUND);
 
-				WLog_ERR(TAG, "getaddrinfo: %s", gai_strerror(status));
 				return -1;
 			}
 
 			addr = result;
 
-			if ((addr->ai_family == AF_INET6) && (addr->ai_next != 0))
+			if ((addr->ai_family == AF_INET6) && (addr->ai_next != 0) && !settings->PreferIPv6OverIPv4)
 			{
 				while ((addr = addr->ai_next))
 				{
@@ -1122,8 +1192,18 @@ int freerdp_tcp_connect(rdpContext* context, rdpSettings* settings,
 
 			if (sockfd < 0)
 			{
+				if (freerdp_get_last_error(context) == FREERDP_ERROR_SUCCESS)
+					freerdp_set_last_error(context, FREERDP_ERROR_CONNECT_FAILED);
+
 				freeaddrinfo(result);
 				return -1;
+			}
+
+			if ((peerAddress = freerdp_tcp_address_to_string((const struct sockaddr_storage*)addr->ai_addr,
+			                   NULL)) != NULL)
+			{
+				WLog_DBG(TAG, "connecting to peer %s", peerAddress);
+				free(peerAddress);
 			}
 
 			if (!freerdp_tcp_connect_timeout(context, sockfd, addr->ai_addr,
@@ -1131,6 +1211,10 @@ int freerdp_tcp_connect(rdpContext* context, rdpSettings* settings,
 			{
 				freeaddrinfo(result);
 				close(sockfd);
+
+				if (freerdp_get_last_error(context) == FREERDP_ERROR_SUCCESS)
+					freerdp_set_last_error(context, FREERDP_ERROR_CONNECT_FAILED);
+
 				WLog_ERR(TAG, "failed to connect to %s", hostname);
 				return -1;
 			}
@@ -1139,14 +1223,16 @@ int freerdp_tcp_connect(rdpContext* context, rdpSettings* settings,
 		}
 	}
 
-	settings->IPv6Enabled = FALSE;
 	free(settings->ClientAddress);
-	settings->ClientAddress = freerdp_tcp_get_ip_address(sockfd);
+	settings->ClientAddress = freerdp_tcp_get_ip_address(sockfd, &settings->IPv6Enabled);
 
 	if (!settings->ClientAddress)
 	{
 		if (!useExternalDefinedSocket)
 			close(sockfd);
+
+		if (freerdp_get_last_error(context) == FREERDP_ERROR_SUCCESS)
+			freerdp_set_last_error(context, FREERDP_ERROR_CONNECT_FAILED);
 
 		WLog_ERR(TAG, "Couldn't get socket ip address");
 		return -1;
@@ -1172,6 +1258,10 @@ int freerdp_tcp_connect(rdpContext* context, rdpSettings* settings,
 			if (setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, (void*) &optval, optlen) < 0)
 			{
 				close(sockfd);
+
+				if (freerdp_get_last_error(context) == FREERDP_ERROR_SUCCESS)
+					freerdp_set_last_error(context, FREERDP_ERROR_CONNECT_FAILED);
+
 				WLog_ERR(TAG, "unable to set receive buffer len");
 				return -1;
 			}
@@ -1183,6 +1273,10 @@ int freerdp_tcp_connect(rdpContext* context, rdpSettings* settings,
 		if (!freerdp_tcp_set_keep_alive_mode(sockfd))
 		{
 			close(sockfd);
+
+			if (freerdp_get_last_error(context) == FREERDP_ERROR_SUCCESS)
+				freerdp_set_last_error(context, FREERDP_ERROR_CONNECT_FAILED);
+
 			WLog_ERR(TAG, "Couldn't set keep alive mode.");
 			return -1;
 		}
@@ -1191,6 +1285,10 @@ int freerdp_tcp_connect(rdpContext* context, rdpSettings* settings,
 	if (WaitForSingleObject(context->abortEvent, 0) == WAIT_OBJECT_0)
 	{
 		close(sockfd);
+
+		if (freerdp_get_last_error(context) == FREERDP_ERROR_SUCCESS)
+			freerdp_set_last_error(context, FREERDP_ERROR_CONNECT_CANCELLED);
+
 		return -1;
 	}
 

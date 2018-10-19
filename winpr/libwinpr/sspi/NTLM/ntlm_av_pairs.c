@@ -180,8 +180,7 @@ int ntlm_get_target_computer_name(PUNICODE_STRING pName, COMPUTER_NAME_FORMAT ty
 	DWORD nSize = 0;
 	CHAR* computerName;
 
-	if (GetComputerNameExA(ComputerNameNetBIOS, NULL, &nSize) || (GetLastError() != ERROR_MORE_DATA) ||
-	    (nSize < 2))
+	if (GetComputerNameExA(ComputerNameNetBIOS, NULL, &nSize) || GetLastError() != ERROR_MORE_DATA)
 		return -1;
 
 	computerName = calloc(nSize, sizeof(CHAR));
@@ -340,7 +339,6 @@ int ntlm_construct_challenge_target_info(NTLM_CONTEXT* context)
 	int length;
 	ULONG AvPairsCount;
 	ULONG AvPairsLength;
-	LONG AvPairListSize;
 	NTLM_AV_PAIR* pAvPairList;
 	UNICODE_STRING NbDomainName;
 	UNICODE_STRING NbComputerName;
@@ -375,7 +373,6 @@ int ntlm_construct_challenge_target_info(NTLM_CONTEXT* context)
 		return -1;
 
 	pAvPairList = (NTLM_AV_PAIR*) context->ChallengeTargetInfo.pvBuffer;
-	AvPairListSize = (ULONG) context->ChallengeTargetInfo.cbBuffer;
 	ntlm_av_pair_list_init(pAvPairList);
 	ntlm_av_pair_add(pAvPairList, MsvAvNbDomainName, (PBYTE) NbDomainName.Buffer, NbDomainName.Length);
 	ntlm_av_pair_add(pAvPairList, MsvAvNbComputerName, (PBYTE) NbComputerName.Buffer,

@@ -276,7 +276,7 @@ BOOL interleaved_decompress(BITMAP_INTERLEAVED_CONTEXT* interleaved,
 	UINT32 SrcFormat;
 	UINT32 BufferSize;
 
-	if (!interleaved)
+	if (!interleaved || !pSrcData || !pDstData)
 		return FALSE;
 
 	switch (bpp)
@@ -322,19 +322,25 @@ BOOL interleaved_decompress(BITMAP_INTERLEAVED_CONTEXT* interleaved,
 	switch (bpp)
 	{
 		case 24:
-			RleDecompress24to24(pSrcData, SrcSize, interleaved->TempBuffer,
-			                    scanline, nSrcWidth, nSrcHeight);
+			if (!RleDecompress24to24(pSrcData, SrcSize, interleaved->TempBuffer,
+			                         scanline, nSrcWidth, nSrcHeight))
+				return FALSE;
+
 			break;
 
 		case 16:
 		case 15:
-			RleDecompress16to16(pSrcData, SrcSize, interleaved->TempBuffer,
-			                    scanline, nSrcWidth, nSrcHeight);
+			if (!RleDecompress16to16(pSrcData, SrcSize, interleaved->TempBuffer,
+			                         scanline, nSrcWidth, nSrcHeight))
+				return FALSE;
+
 			break;
 
 		case 8:
-			RleDecompress8to8(pSrcData, SrcSize, interleaved->TempBuffer,
-			                  scanline, nSrcWidth, nSrcHeight);
+			if (!RleDecompress8to8(pSrcData, SrcSize, interleaved->TempBuffer,
+			                       scanline, nSrcWidth, nSrcHeight))
+				return FALSE;
+
 			break;
 
 		default:
@@ -384,9 +390,11 @@ BOOL interleaved_compress(BITMAP_INTERLEAVED_CONTEXT* interleaved,
 	if (!DstFormat)
 		return FALSE;
 
-	status = freerdp_image_copy(interleaved->TempBuffer, DstFormat, 0, 0, 0, nWidth,
-	                            nHeight,
-	                            pSrcData, SrcFormat, nSrcStep, nXSrc, nYSrc, palette, FREERDP_FLIP_NONE);
+	if (!freerdp_image_copy(interleaved->TempBuffer, DstFormat, 0, 0, 0, nWidth,
+	                        nHeight,
+	                        pSrcData, SrcFormat, nSrcStep, nXSrc, nYSrc, palette, FREERDP_FLIP_NONE))
+		return FALSE;
+
 	s = Stream_New(pDstData, maxSize);
 
 	if (!s)

@@ -28,6 +28,8 @@
 #include <freerdp/autodetect.h>
 
 #include <winpr/sspi.h>
+#include <winpr/ntlm.h>
+
 
 typedef BOOL (*psPeerContextNew)(freerdp_peer* peer, rdpContext* context);
 typedef void (*psPeerContextFree)(freerdp_peer* peer, rdpContext* context);
@@ -50,8 +52,10 @@ typedef BOOL (*psPeerLogon)(freerdp_peer* peer, SEC_WINNT_AUTH_IDENTITY* identit
 typedef BOOL (*psPeerAdjustMonitorsLayout)(freerdp_peer* peer);
 typedef BOOL (*psPeerClientCapabilities)(freerdp_peer* peer);
 
-typedef int (*psPeerSendChannelData)(freerdp_peer* peer, UINT16 channelId, BYTE* data, int size);
-typedef int (*psPeerReceiveChannelData)(freerdp_peer* peer, UINT16 channelId, BYTE* data, int size,
+typedef int (*psPeerSendChannelData)(freerdp_peer* peer, UINT16 channelId, const BYTE* data,
+                                     int size);
+typedef int (*psPeerReceiveChannelData)(freerdp_peer* peer, UINT16 channelId, const BYTE* data,
+                                        int size,
                                         int flags, int totalSize);
 
 typedef HANDLE(*psPeerVirtualChannelOpen)(freerdp_peer* peer, const char* name, UINT32 flags);
@@ -118,6 +122,7 @@ struct rdp_freerdp_peer
 	psPeerGetEventHandles GetEventHandles;
 	psPeerAdjustMonitorsLayout AdjustMonitorsLayout;
 	psPeerClientCapabilities ClientCapabilities;
+	psPeerComputeNtlmHash ComputeNtlmHash;
 };
 
 #ifdef __cplusplus

@@ -68,11 +68,12 @@
 #include "rdpdr_main.h"
 
 typedef struct _DEVICE_DRIVE_EXT DEVICE_DRIVE_EXT;
-
+/* IMPORTANT: Keep in sync with DRIVE_DEVICE */
 struct _DEVICE_DRIVE_EXT
 {
 	DEVICE device;
-	char* path;
+	WCHAR* path;
+	BOOL automount;
 };
 
 /**
@@ -118,9 +119,9 @@ void first_hotplug(rdpdrPlugin* rdpdr)
 {
 }
 
-static void* drive_hotplug_thread_func(void* arg)
+static DWORD WINAPI drive_hotplug_thread_func(LPVOID arg)
 {
-	return NULL;
+	return CHANNEL_RC_OK;
 }
 
 static UINT drive_hotplug_thread_terminate(rdpdrPlugin* rdpdr)
@@ -162,6 +163,7 @@ void first_hotplug(rdpdrPlugin* rdpdr)
 				drive->Path = _strdup(drive_path);
 				drive_path[1] = '\0';
 				drive->Name = _strdup(drive_path);
+				drive->automount = TRUE;
 				devman_load_device_service(rdpdr->devman, (RDPDR_DEVICE*)drive,
 				                           rdpdr->rdpcontext);
 			}
@@ -206,6 +208,7 @@ LRESULT CALLBACK hotplug_proc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 									drive->Type = RDPDR_DTYP_FILESYSTEM;
 									drive->Path = _strdup(drive_path);
 									drive_path[1] = '\0';
+									drive->automount = TRUE;
 									drive->Name = _strdup(drive_path);
 									devman_load_device_service(rdpdr->devman, (RDPDR_DEVICE*)drive,
 									                           rdpdr->rdpcontext);
@@ -226,7 +229,7 @@ LRESULT CALLBACK hotplug_proc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 						DWORD unitmask = lpdbv->dbcv_unitmask;
 						int i, j, count;
 						char drive_name_upper, drive_name_lower;
-						ULONG_PTR* keys;
+						ULONG_PTR* keys = NULL;
 						DEVICE_DRIVE_EXT* device_ext;
 						UINT32 ids[1];
 
@@ -246,19 +249,24 @@ LRESULT CALLBACK hotplug_proc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 									if (device_ext->path[0] == drive_name_upper
 									    || device_ext->path[0] == drive_name_lower)
 									{
-										devman_unregister_device(rdpdr->devman, (void*)keys[j]);
-										ids[0] = keys[j];
-
-										if ((error = rdpdr_send_device_list_remove_request(rdpdr, 1, ids)))
+										if (device_ext->automount)
 										{
-											// dont end on error, just report ?
-											WLog_ERR(TAG, "rdpdr_send_device_list_remove_request failed with error %"PRIu32"!",
-											         error);
-										}
+											devman_unregister_device(rdpdr->devman, (void*)keys[j]);
+											ids[0] = keys[j];
 
-										break;
+											if ((error = rdpdr_send_device_list_remove_request(rdpdr, 1, ids)))
+											{
+												// dont end on error, just report ?
+												WLog_ERR(TAG, "rdpdr_send_device_list_remove_request failed with error %"PRIu32"!",
+												         error);
+											}
+
+											break;
+										}
 									}
 								}
+
+								free(keys);
 							}
 
 							unitmask = unitmask >> 1;
@@ -280,7 +288,7 @@ LRESULT CALLBACK hotplug_proc(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 	return DefWindowProc(hWnd, Msg, wParam, lParam);
 }
 
-static void* drive_hotplug_thread_func(void* arg)
+static DWORD WINAPI drive_hotplug_thread_func(LPVOID arg)
 {
 	rdpdrPlugin* rdpdr;
 	WNDCLASSEX wnd_cls;
@@ -331,7 +339,7 @@ static void* drive_hotplug_thread_func(void* arg)
 	}
 
 	UnregisterDeviceNotification(hDevNotify);
-	return NULL;
+	return CHANNEL_RC_OK;
 }
 
 /**
@@ -378,7 +386,7 @@ static UINT handle_hotplug(rdpdrPlugin* rdpdr)
 	hotplug_dev dev_array[MAX_USB_DEVICES];
 	int count;
 	DEVICE_DRIVE_EXT* device_ext;
-	ULONG_PTR* keys;
+	ULONG_PTR* keys = NULL;
 	int i, j;
 	int size = 0;
 	UINT error;
@@ -395,7 +403,7 @@ static UINT handle_hotplug(rdpdrPlugin* rdpdr)
 	{
 		if (pDirent->d_name[0] != '.')
 		{
-			sprintf(fullpath, "%s/%s", szdir, pDirent->d_name);
+			sprintf_s(fullpath, ARRAYSIZE(fullpath), "%s/%s", szdir, pDirent->d_name);
 			lstat(fullpath, &buf);
 
 			if (S_ISDIR(buf.st_mode))
@@ -420,29 +428,38 @@ static UINT handle_hotplug(rdpdrPlugin* rdpdr)
 
 	for (j = 0; j < count; j++)
 	{
+		char* path = NULL;
 		BOOL dev_found = FALSE;
 		device_ext = (DEVICE_DRIVE_EXT*)ListDictionary_GetItemValue(
 		                 rdpdr->devman->devices, (void*)keys[j]);
 
-		if (!device_ext)
+		if (!device_ext || !device_ext->automount)
 			continue;
 
 		if (device_ext->path == NULL)
 			continue;
 
-		/* not plugable device */
-		if (strstr(device_ext->path, "/Volumes/") == NULL)
+		if (ConvertFromUnicode(CP_UTF8, 0, device_ext->path, 0, &path, 0, NULL, FALSE) <= 0)
 			continue;
+
+		/* not plugable device */
+		if (strstr(path, "/Volumes/") == NULL)
+		{
+			free(path);
+			continue;
+		}
 
 		for (i = 0; i < size; i++)
 		{
-			if (strstr(device_ext->path, dev_array[i].path) != NULL)
+			if (strstr(path, dev_array[i].path) != NULL)
 			{
 				dev_found = TRUE;
 				dev_array[i].to_add = FALSE;
 				break;
 			}
 		}
+
+		free(path);
 
 		if (!dev_found)
 		{
@@ -477,6 +494,7 @@ static UINT handle_hotplug(rdpdrPlugin* rdpdr)
 
 			drive->Type = RDPDR_DTYP_FILESYSTEM;
 			drive->Path = dev_array[i].path;
+			drive->automount = TRUE;
 			dev_array[i].path = NULL;
 			name = strrchr(drive->Path, '/') + 1;
 			drive->Name = _strdup(name);
@@ -504,6 +522,7 @@ static UINT handle_hotplug(rdpdrPlugin* rdpdr)
 	}
 
 cleanup:
+	free(keys);
 
 	for (i = 0; i < size; i++)
 		free(dev_array[i].path);
@@ -549,7 +568,7 @@ void first_hotplug(rdpdrPlugin* rdpdr)
 	}
 }
 
-static void* drive_hotplug_thread_func(void* arg)
+static DWORD WINAPI drive_hotplug_thread_func(LPVOID arg)
 {
 	rdpdrPlugin* rdpdr;
 	FSEventStreamRef fsev;
@@ -570,7 +589,7 @@ static void* drive_hotplug_thread_func(void* arg)
 	FSEventStreamStop(fsev);
 	FSEventStreamRelease(fsev);
 	ExitThread(CHANNEL_RC_OK);
-	return NULL;
+	return CHANNEL_RC_OK;
 }
 
 
@@ -610,6 +629,62 @@ typedef struct _hotplug_dev
 	BOOL  to_add;
 } hotplug_dev;
 
+
+static const char* automountLocations[] =
+{
+	"/run/user/%lu/gvfs",
+	"/run/media/%s",
+	"/media/%s",
+	"/media",
+	"/mnt"
+};
+
+static BOOL isAutomountLocation(const char* path)
+{
+	const size_t nrLocations = sizeof(automountLocations) / sizeof(automountLocations[0]);
+	size_t x;
+	char buffer[MAX_PATH];
+	uid_t uid = getuid();
+	const char* uname = getlogin();
+
+	if (!path)
+		return FALSE;
+
+	for (x = 0; x < nrLocations; x++)
+	{
+		const char* location = automountLocations[x];
+		size_t length;
+
+		if (strstr(location, "%lu"))
+			snprintf(buffer, sizeof(buffer), location, (unsigned long)uid);
+		else if (strstr(location, "%s"))
+			snprintf(buffer, sizeof(buffer), location, uname);
+		else
+			snprintf(buffer, sizeof(buffer), "%s", location);
+
+		length = strnlen(buffer, sizeof(buffer));
+
+		if (strncmp(buffer, path, length) == 0)
+		{
+			const char* rest = &path[length];
+
+			/* Only consider mount locations with max depth of 1 below the
+			 * base path or the base path itself. */
+			if (*rest == '\0')
+				return TRUE;
+			else if (*rest == '/')
+			{
+				const char* token = strstr(&rest[1], "/");
+
+				if (!token || (token[1] == '\0'))
+					return TRUE;
+			}
+		}
+	}
+
+	return FALSE;
+}
+
 static char* next_line(FILE* fd, size_t* len)
 {
 	size_t newsiz;
@@ -627,7 +702,10 @@ static char* next_line(FILE* fd, size_t* len)
 		c = fgetc(fd);
 
 		if (ferror(fd))
+		{
+			free(newbuf);
 			return NULL;
+		}
 
 		if (c == EOF)
 		{
@@ -716,8 +794,7 @@ static UINT handle_hotplug(rdpdrPlugin* rdpdr)
 	int i, j;
 	int size = 0;
 	int count;
-	DEVICE_DRIVE_EXT* device_ext;
-	ULONG_PTR* keys;
+	ULONG_PTR* keys = NULL;
 	UINT32 ids[1];
 	UINT error = 0;
 	memset(dev_array, 0, sizeof(dev_array));
@@ -736,7 +813,7 @@ static UINT handle_hotplug(rdpdrPlugin* rdpdr)
 		while ((word = get_word(line, &wlen)))
 		{
 			/* copy hotpluged device mount point to the dev_array */
-			if (strstr(word, "/mnt/") != NULL || strstr(word, "/media/") != NULL)
+			if (isAutomountLocation(word))
 			{
 				dev_array[size].path = word;
 				dev_array[size++].to_add = TRUE;
@@ -754,27 +831,34 @@ static UINT handle_hotplug(rdpdrPlugin* rdpdr)
 
 	for (j = 0; j < count; j++)
 	{
+		char* path = NULL;
 		BOOL dev_found = FALSE;
-		device_ext = (DEVICE_DRIVE_EXT*)ListDictionary_GetItemValue(
-		                 rdpdr->devman->devices, (void*)keys[j]);
+		DEVICE_DRIVE_EXT* device_ext = (DEVICE_DRIVE_EXT*)ListDictionary_GetItemValue(
+		                                   rdpdr->devman->devices, (void*)keys[j]);
 
-		if (!device_ext || !device_ext->path)
+		if (!device_ext || !device_ext->path || !device_ext->automount)
+			continue;
+
+		ConvertFromUnicode(CP_UTF8, 0, device_ext->path, -1, &path, 0, NULL, NULL);
+
+		if (!path)
 			continue;
 
 		/* not plugable device */
-		if (strstr(device_ext->path, "/mnt/") == NULL
-		    && strstr(device_ext->path, "/media/") == NULL)
-			continue;
-
-		for (i = 0; i < size; i++)
+		if (isAutomountLocation(path))
 		{
-			if (strstr(device_ext->path, dev_array[i].path) != NULL)
+			for (i = 0; i < size; i++)
 			{
-				dev_found = TRUE;
-				dev_array[i].to_add = FALSE;
-				break;
+				if (strstr(path, dev_array[i].path) != NULL)
+				{
+					dev_found = TRUE;
+					dev_array[i].to_add = FALSE;
+					break;
+				}
 			}
 		}
+
+		free(path);
 
 		if (!dev_found)
 		{
@@ -809,6 +893,7 @@ static UINT handle_hotplug(rdpdrPlugin* rdpdr)
 
 			drive->Type = RDPDR_DTYP_FILESYSTEM;
 			drive->Path = dev_array[i].path;
+			drive->automount = TRUE;
 			dev_array[i].path = NULL;
 			name = strrchr(drive->Path, '/') + 1;
 			drive->Name = _strdup(name);
@@ -835,6 +920,7 @@ static UINT handle_hotplug(rdpdrPlugin* rdpdr)
 	}
 
 cleanup:
+	free(keys);
 
 	for (i = 0; i < size; i++)
 		free(dev_array[i].path);
@@ -852,7 +938,7 @@ static void first_hotplug(rdpdrPlugin* rdpdr)
 	}
 }
 
-static void* drive_hotplug_thread_func(void* arg)
+static DWORD WINAPI drive_hotplug_thread_func(LPVOID arg)
 {
 	rdpdrPlugin* rdpdr;
 	int mfd;
@@ -923,8 +1009,8 @@ out:
 		                "drive_hotplug_thread_func reported an error");
 
 	CloseHandle(rdpdr->stopEvent);
-	ExitThread((DWORD)error);
-	return NULL;
+	ExitThread(error);
+	return error;
 }
 
 /**
@@ -989,18 +1075,23 @@ static UINT rdpdr_process_connect(rdpdrPlugin* rdpdr)
 	{
 		device = settings->DeviceArray[index];
 
-		if (device->Name && (strcmp(device->Name, "*") == 0))
+		if (device->Type == RDPDR_DTYP_FILESYSTEM)
 		{
-			first_hotplug(rdpdr);
+			RDPDR_DRIVE* drive = (RDPDR_DRIVE*)device;
 
-			if (!(rdpdr->hotplugThread = CreateThread(NULL, 0,
-			                             (LPTHREAD_START_ROUTINE) drive_hotplug_thread_func, rdpdr, 0, NULL)))
+			if (drive->Path && (strcmp(drive->Path, "*") == 0))
 			{
-				WLog_ERR(TAG, "CreateThread failed!");
-				return ERROR_INTERNAL_ERROR;
-			}
+				first_hotplug(rdpdr);
 
-			continue;
+				if (!(rdpdr->hotplugThread = CreateThread(NULL, 0,
+				                             drive_hotplug_thread_func, rdpdr, 0, NULL)))
+				{
+					WLog_ERR(TAG, "CreateThread failed!");
+					return ERROR_INTERNAL_ERROR;
+				}
+
+				continue;
+			}
 		}
 
 		if ((error = devman_load_device_service(rdpdr->devman, device,
@@ -1071,6 +1162,7 @@ static UINT rdpdr_send_client_name_request(rdpdrPlugin* rdpdr)
 
 	if (!s)
 	{
+		free(computerNameW);
 		WLog_ERR(TAG, "Stream_New failed!");
 		return CHANNEL_RC_NO_MEMORY;
 	}
@@ -1123,15 +1215,15 @@ static UINT rdpdr_send_device_list_announce_request(rdpdrPlugin* rdpdr,
 {
 	int i;
 	BYTE c;
-	int pos;
+	size_t pos;
 	int index;
 	wStream* s;
 	UINT32 count;
-	int data_len;
-	int count_pos;
+	size_t data_len;
+	size_t count_pos;
 	DEVICE* device;
 	int keyCount;
-	ULONG_PTR* pKeys;
+	ULONG_PTR* pKeys = NULL;
 	s = Stream_New(NULL, 256);
 
 	if (!s)
@@ -1142,7 +1234,7 @@ static UINT rdpdr_send_device_list_announce_request(rdpdrPlugin* rdpdr,
 
 	Stream_Write_UINT16(s, RDPDR_CTYP_CORE); /* Component (2 bytes) */
 	Stream_Write_UINT16(s, PAKID_CORE_DEVICELIST_ANNOUNCE); /* PacketId (2 bytes) */
-	count_pos = (int) Stream_GetPosition(s);
+	count_pos = Stream_GetPosition(s);
 	count = 0;
 	Stream_Seek_UINT32(s); /* deviceCount */
 	pKeys = NULL;
@@ -1163,10 +1255,12 @@ static UINT rdpdr_send_device_list_announce_request(rdpdrPlugin* rdpdr,
 		if ((rdpdr->versionMinor == 0x0005) ||
 		    (device->type == RDPDR_DTYP_SMARTCARD) || userLoggedOn)
 		{
-			data_len = (int)(device->data == NULL ? 0 : Stream_GetPosition(device->data));
+			data_len = (device->data == NULL ? 0 : Stream_GetPosition(device->data));
 
 			if (!Stream_EnsureRemainingCapacity(s, 20 + data_len))
 			{
+				free(pKeys);
+				Stream_Free(s, TRUE);
 				WLog_ERR(TAG, "Stream_EnsureRemainingCapacity failed!");
 				return ERROR_INVALID_DATA;
 			}
@@ -1197,7 +1291,7 @@ static UINT rdpdr_send_device_list_announce_request(rdpdrPlugin* rdpdr,
 	}
 
 	free(pKeys);
-	pos = (int) Stream_GetPosition(s);
+	pos = Stream_GetPosition(s);
 	Stream_SetPosition(s, count_pos);
 	Stream_Write_UINT32(s, count);
 	Stream_SetPosition(s, pos);
@@ -1240,7 +1334,7 @@ static UINT rdpdr_process_init(rdpdrPlugin* rdpdr)
 	int index;
 	int keyCount;
 	DEVICE* device;
-	ULONG_PTR* pKeys;
+	ULONG_PTR* pKeys = NULL;
 	UINT error = CHANNEL_RC_OK;
 	pKeys = NULL;
 	keyCount = ListDictionary_GetKeys(rdpdr->devman->devices, &pKeys);
@@ -1533,7 +1627,6 @@ static VOID VCAPITYPE rdpdr_virtual_channel_open_event_ex(LPVOID lpUserParam, DW
 			break;
 
 		case CHANNEL_EVENT_WRITE_COMPLETE:
-			Stream_Free((wStream*) pData, TRUE);
 			break;
 
 		case CHANNEL_EVENT_USER:
@@ -1547,7 +1640,7 @@ static VOID VCAPITYPE rdpdr_virtual_channel_open_event_ex(LPVOID lpUserParam, DW
 	return;
 }
 
-static void* rdpdr_virtual_channel_client_thread(void* arg)
+static DWORD WINAPI rdpdr_virtual_channel_client_thread(LPVOID arg)
 {
 	wStream* data;
 	wMessage message;
@@ -1557,7 +1650,7 @@ static void* rdpdr_virtual_channel_client_thread(void* arg)
 	if (!rdpdr)
 	{
 		ExitThread((DWORD) CHANNEL_RC_NULL_DATA);
-		return NULL;
+		return CHANNEL_RC_NULL_DATA;
 	}
 
 	if ((error = rdpdr_process_connect(rdpdr)))
@@ -1568,8 +1661,8 @@ static void* rdpdr_virtual_channel_client_thread(void* arg)
 			setChannelError(rdpdr->rdpcontext, error,
 			                "rdpdr_virtual_channel_client_thread reported an error");
 
-		ExitThread((DWORD) error);
-		return NULL;
+		ExitThread(error);
+		return error;
 	}
 
 	while (1)
@@ -1595,14 +1688,14 @@ static void* rdpdr_virtual_channel_client_thread(void* arg)
 						                "rdpdr_virtual_channel_client_thread reported an error");
 
 					ExitThread((DWORD) error);
-					return NULL;
+					return error;
 				}
 			}
 		}
 	}
 
 	ExitThread(0);
-	return NULL;
+	return 0;
 }
 
 /**
@@ -1633,7 +1726,7 @@ static UINT rdpdr_virtual_channel_event_connected(rdpdrPlugin* rdpdr,
 	}
 
 	if (!(rdpdr->thread = CreateThread(NULL, 0,
-	                                   (LPTHREAD_START_ROUTINE) rdpdr_virtual_channel_client_thread, (void*) rdpdr, 0,
+	                                   rdpdr_virtual_channel_client_thread, (void*) rdpdr, 0,
 	                                   NULL)))
 	{
 		WLog_ERR(TAG, "CreateThread failed!");
@@ -1651,6 +1744,9 @@ static UINT rdpdr_virtual_channel_event_connected(rdpdrPlugin* rdpdr,
 static UINT rdpdr_virtual_channel_event_disconnected(rdpdrPlugin* rdpdr)
 {
 	UINT error;
+
+	if (rdpdr->OpenHandle == 0)
+		return CHANNEL_RC_OK;
 
 	if (MessageQueue_PostQuit(rdpdr->queue, 0)
 	    && (WaitForSingleObject(rdpdr->thread, INFINITE) == WAIT_FAILED))
@@ -1770,7 +1866,7 @@ BOOL VCAPITYPE VirtualChannelEntryEx(PCHANNEL_ENTRY_POINTS pEntryPoints, PVOID p
 	    CHANNEL_OPTION_INITIALIZED |
 	    CHANNEL_OPTION_ENCRYPT_RDP |
 	    CHANNEL_OPTION_COMPRESS_RDP;
-	strcpy(rdpdr->channelDef.name, "rdpdr");
+	sprintf_s(rdpdr->channelDef.name, ARRAYSIZE(rdpdr->channelDef.name), "rdpdr");
 	rdpdr->sequenceId = 0;
 	pEntryPointsEx = (CHANNEL_ENTRY_POINTS_FREERDP_EX*) pEntryPoints;
 
