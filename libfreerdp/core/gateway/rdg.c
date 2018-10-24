@@ -79,10 +79,11 @@ static BOOL rdg_read_all(rdpTls* tls, BYTE* buffer, int size)
 {
 	int status;
 	int readCount = 0;
+	BYTE* pBuffer = buffer;
 
 	while (readCount < size)
 	{
-		status = BIO_read(tls->bio, buffer, size - readCount);
+		status = BIO_read(tls->bio, pBuffer, size - readCount);
 
 		if (status <= 0)
 		{
@@ -93,6 +94,7 @@ static BOOL rdg_read_all(rdpTls* tls, BYTE* buffer, int size)
 		}
 
 		readCount += status;
+		pBuffer += status;
 	}
 
 	return TRUE;
@@ -326,7 +328,7 @@ static wStream* rdg_build_http_request(rdpRdg* rdg, const char* method,
 	HttpRequest* request = NULL;
 	const char* uri;
 
-	if (!rdg || !method || !transferEncoding)
+	if (!rdg || !method )
 		return NULL;
 
 	uri = http_context_get_uri(rdg->http);
