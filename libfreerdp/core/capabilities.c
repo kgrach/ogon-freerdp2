@@ -415,7 +415,7 @@ static BOOL rdp_write_bitmap_capability_set(wStream* s, rdpSettings* settings)
 	 * appears consistent in its use.
 	 */
 
-	if (settings->RdpVersion > 5)
+	if (settings->RdpVersion >= RDP_VERSION_5_PLUS)
 		preferredBitsPerPixel = settings->ColorDepth;
 	else
 		preferredBitsPerPixel = 8;
@@ -3966,17 +3966,16 @@ BOOL rdp_write_demand_active(wStream* s, rdpSettings* settings)
 
 BOOL rdp_send_demand_active(rdpRdp* rdp)
 {
-	wStream* s;
+	wStream* s = rdp_send_stream_pdu_init(rdp);
 	BOOL status;
 
-	if (!(s = Stream_New(NULL, 4096)))
+	if (!s)
 		return FALSE;
 
-	rdp_init_stream_pdu(rdp, s);
 	rdp->settings->ShareId = 0x10000 + rdp->mcs->userId;
 	status = rdp_write_demand_active(s, rdp->settings) &&
 	         rdp_send_pdu(rdp, s, PDU_TYPE_DEMAND_ACTIVE, rdp->mcs->userId);
-	Stream_Free(s, TRUE);
+	Stream_Release(s);
 	return status;
 }
 
@@ -4073,7 +4072,7 @@ BOOL rdp_write_confirm_active(wStream* s, rdpSettings* settings)
 	    !rdp_write_order_capability_set(s, settings))
 		return FALSE;
 
-	if (settings->RdpVersion >= 5)
+	if (settings->RdpVersion >= RDP_VERSION_5_PLUS)
 		ret = rdp_write_bitmap_cache_v2_capability_set(s, settings);
 	else
 		ret = rdp_write_bitmap_cache_capability_set(s, settings);
@@ -4196,15 +4195,14 @@ BOOL rdp_write_confirm_active(wStream* s, rdpSettings* settings)
 
 BOOL rdp_send_confirm_active(rdpRdp* rdp)
 {
-	wStream* s;
+	wStream* s = rdp_send_stream_pdu_init(rdp);
 	BOOL status;
 
-	if (!(s = Stream_New(NULL, 4096)))
+	if (!s)
 		return FALSE;
 
-	rdp_init_stream_pdu(rdp, s);
 	status = rdp_write_confirm_active(s, rdp->settings) &&
 	         rdp_send_pdu(rdp, s, PDU_TYPE_CONFIRM_ACTIVE, rdp->mcs->userId);
-	Stream_Free(s, TRUE);
+	Stream_Release(s);
 	return status;
 }
