@@ -676,7 +676,7 @@ static BOOL rdp_read_info_packet(rdpRdp* rdp, wStream* s)
 
 	Stream_Seek(s, 2);
 
-	if (settings->RdpVersion >= 5)
+	if (settings->RdpVersion >= RDP_VERSION_5_PLUS)
 		return rdp_read_extended_info_packet(rdp, s); /* extraInfo */
 
 	return TRUE;
@@ -873,7 +873,7 @@ static void rdp_write_info_packet(rdpRdp* rdp, wStream* s)
 	if (!usedPasswordCookie)
 		free(passwordW);
 
-	if (settings->RdpVersion >= 5)
+	if (settings->RdpVersion >= RDP_VERSION_5_PLUS)
 		rdp_write_extended_info_packet(rdp, s); /* extraInfo */
 }
 
@@ -929,9 +929,8 @@ BOOL rdp_recv_client_info(rdpRdp* rdp, wStream* s)
 BOOL rdp_send_client_info(rdpRdp* rdp)
 {
 	wStream* s;
-	BOOL status;
 	rdp->sec_flags |= SEC_INFO_PKT;
-	s = Stream_New(NULL, 2048);
+	s = rdp_send_stream_init(rdp);
 
 	if (!s)
 	{
@@ -939,11 +938,8 @@ BOOL rdp_send_client_info(rdpRdp* rdp)
 		return FALSE;
 	}
 
-	rdp_init_stream(rdp, s);
 	rdp_write_info_packet(rdp, s);
-	status = rdp_send(rdp, s, MCS_GLOBAL_CHANNEL_ID);
-	Stream_Free(s, TRUE);
-	return status;
+	return rdp_send(rdp, s, MCS_GLOBAL_CHANNEL_ID);
 }
 
 static BOOL rdp_recv_logon_info_v1(rdpRdp* rdp, wStream* s, logon_info* info)
@@ -1339,7 +1335,7 @@ static BOOL rdp_write_logon_info_v2(wStream* s, logon_info* info)
 {
 	int Size = 2 + 4 + 4 + 4 + 4 + 558;
 	int domainLen, usernameLen, len;
-	WCHAR* wString;
+	WCHAR* wString = NULL;
 
 	if (!Stream_EnsureRemainingCapacity(s, Size))
 		return FALSE;
@@ -1461,7 +1457,7 @@ BOOL rdp_send_save_session_info(rdpContext* context, UINT32 type, void* data)
 	if (status)
 		status = rdp_send_data_pdu(rdp, s, DATA_PDU_TYPE_SAVE_SESSION_INFO, rdp->mcs->userId);
 	else
-		Stream_Free(s, TRUE);
+		Stream_Release(s);
 
 	return status;
 }

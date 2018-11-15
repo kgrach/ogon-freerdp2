@@ -538,7 +538,7 @@ static BIO* BIO_new_rdp_tls(SSL_CTX* ctx, int client)
 
 	if (!ssl)
 	{
-		BIO_free(bio);
+		BIO_free_all(bio);
 		return NULL;
 	}
 
@@ -650,6 +650,10 @@ static BOOL tls_prepare(rdpTls* tls, BIO* underlying, SSL_METHOD* method,
 	                 SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER | SSL_MODE_ENABLE_PARTIAL_WRITE);
 	SSL_CTX_set_options(tls->ctx, options);
 	SSL_CTX_set_read_ahead(tls->ctx, 1);
+
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L || defined(LIBRESSL_VERSION_NUMBER)
+	SSL_CTX_set_security_level(tls->ctx, settings->TlsSecLevel);
+#endif
 
 	if (settings->AllowedTlsCiphers)
 	{
@@ -935,7 +939,7 @@ BOOL tls_accept(rdpTls* tls, BIO* underlying, rdpSettings* settings)
 	}
 
 	rsa = PEM_read_bio_RSAPrivateKey(bio, NULL, NULL, NULL);
-	BIO_free(bio);
+	BIO_free_all(bio);
 
 	if (!rsa)
 	{
@@ -979,7 +983,7 @@ BOOL tls_accept(rdpTls* tls, BIO* underlying, rdpSettings* settings)
 	}
 
 	x509 = PEM_read_bio_X509(bio, NULL, NULL, 0);
-	BIO_free(bio);
+	BIO_free_all(bio);
 
 	if (!x509)
 	{
@@ -1282,7 +1286,7 @@ fail:
 	if (!rc)
 		free(pemCert);
 
-	BIO_free(bio);
+	BIO_free_all(bio);
 	return rc;
 }
 
@@ -1612,17 +1616,11 @@ void tls_free(rdpTls* tls)
 		tls->ctx = NULL;
 	}
 
-	if (tls->bio)
-	{
-		BIO_free(tls->bio);
-		tls->bio = NULL;
-	}
-
-	if (tls->underlying)
-	{
-		BIO_free(tls->underlying);
-		tls->underlying = NULL;
-	}
+	/* tls->underlying is a stacked BIO under tls->bio.
+	 * BIO_free_all will free recursivly. */
+	BIO_free_all(tls->bio);
+	tls->bio = NULL;
+	tls->underlying = NULL;
 
 	if (tls->PublicKey)
 	{
