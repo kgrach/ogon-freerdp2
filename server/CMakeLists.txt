@@ -19,7 +19,7 @@
 
 add_subdirectory(common)
 add_subdirectory(shadow)
-123
+
 if(FREERDP_VENDOR)
 	if(WITH_SAMPLE)
 		add_subdirectory(Sample)
